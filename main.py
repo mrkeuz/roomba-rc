@@ -1,97 +1,192 @@
 #!/usr/bin/env python3
 
-import curses
+import argparse
+import asyncio
+import functools
+import json
+import logging
 import math
-import traceback
-from time import sleep
+import os
+import sys
+import time
+from enum import Enum
+from http import HTTPStatus
 
+import websockets
 from pyroombaadapter import PyRoombaAdapter
 
-PORT = "/dev/ttyUSB0"
-adapter = PyRoombaAdapter(PORT)
-adapter.change_mode_to_full()
+logger = logging.getLogger(__name__)
+
+SPEED = 0.2
+TURN_DEG = 40
+
+SERVER = "0.0.0.0"
+PORT = 8765
+TTY = "/dev/ttyUSB0"
 
 
-def mini_sleep():
-    sleep(0.03)
+class DummyAdapter:
+    @staticmethod
+    def move(speed, turn):
+        pass
 
 
-def deg2radians(f):
-    return math.radians(f)
+adapter = None
+
+MIME_TYPES = {
+    "html": "text/html",
+    "js": "text/javascript",
+    "css": "text/css"
+}
 
 
-# noinspection PyBroadException
-try:
-    # -- Initialize --
-    stdscr = curses.initscr()  # initialize curses screen
-    curses.noecho()  # turn off auto echoing of keypress on to screen
-    curses.cbreak()  # enter break mode where pressing Enter key
-    #  after keystroke is not required for it to register
-    stdscr.keypad(True)  # enable special Key values such as curses.KEY_LEFT etc
+class Key(Enum):
+    UP = 1
+    DOWN = 2
+    RIGHT = 3
+    LEFT = 4
+    SHIFT = 5
 
-    # -- Perform an action with Screen --
-    stdscr.border(0)
-    stdscr.addstr(5, 5, 'Roomba controller ->>> ', curses.A_BOLD)
-    stdscr.addstr(6, 5, ' UP, DOWN, LEFT, RIGHT', curses.A_BOLD)
-    stdscr.addstr(7, 5, 'q w e', curses.A_BOLD)
-    stdscr.addstr(8, 5, 'a s d', curses.A_BOLD)
-    stdscr.addstr(9, 5, 'Press Ctrl-C to close this screen', curses.A_NORMAL)
-    stdscr.nodelay(True)
 
-    running = True
+key_loop = {}
 
-    while running:
-        # stay in this loop till the user presses 'q'
+cur_koef = 1
+cur_speed = 0
+cur_turn_rad = 0
 
-        ch = -1
-        last = None
-        skip_count = 0
 
-        # Skip repeats
-        while True:
-            skip_count += 1
-            last = stdscr.getch()
-            if (ch > 0 and last == -1) or skip_count > 10000:
-                # print(skip_count)
-                break
-            ch = last
+async def rc_input(websocket, path):
+    while True:
+        event_json = await websocket.recv()
+        # print(f"< {event_json}")
 
-        if ch == curses.KEY_UP or ch == ord('w'):
-            adapter.move(0.2, deg2radians(0.0))  # go straight
-            mini_sleep()
-        if ch == curses.KEY_DOWN or ch == ord('s'):
-            adapter.move(-0.2, math.radians(0.0))  # go straight
-            mini_sleep()
-            # adapter.move(0, math.radians(0.0))
-        if ch == curses.KEY_LEFT or ch == ord('a'):
-            adapter.move(0, math.radians(40))  # turn left
-            mini_sleep()
-            # adapter.move(0, math.radians(0.0))
-        if ch == curses.KEY_RIGHT or ch == ord('d'):
-            adapter.move(0, math.radians(-40))  # turn right
-            mini_sleep()
-            # adapter.move(0, math.radians(0.0))
-        if ch == ord('q'):
-            adapter.move(0.2, math.radians(40))  # go straight
-            mini_sleep()
-        if ch == ord('e'):
-            adapter.move(0.2, math.radians(-40))  # go straight
-            mini_sleep()
-        if ch == -1:
-            pass
-            # print("Stop" + str(skip_count))
-            adapter.move(0, math.radians(0.0))
-        if ch == ord('x'):
-            adapter.move(0, math.radians(0.0))
-            break
+        event = json.loads(event_json)
 
-    # -- End of user code --
+        if event['event'] == 'keydown':
+            ev_time = time.time()  # Need to trace press order
 
-except:
-    traceback.print_exc()  # print trace back log of the error
+            if event['keyName'] in ['Shift']:
+                key_loop[Key.SHIFT] = ev_time
+            if event['keyName'] in ['ArrowUp', 'w', 'W']:
+                key_loop[Key.UP] = ev_time
+            if event['keyName'] in ['ArrowDown', 's', 'S']:
+                key_loop[Key.DOWN] = ev_time
+            if event['keyName'] in ['ArrowLeft', 'a', 'A']:
+                key_loop[Key.LEFT] = ev_time
+            if event['keyName'] in ['ArrowRight', 'd', 'D']:
+                key_loop[Key.RIGHT] = ev_time
 
-finally:
-    # --- Cleanup on exit ---
-    curses.echo()
-    curses.nocbreak()
-    curses.endwin()
+        if event['event'] == 'keyup':
+            if event['keyName'] in ['Shift']:
+                del key_loop[Key.SHIFT]
+
+            if event['keyName'] in ['ArrowUp', 'w', 'W']:
+                del key_loop[Key.UP]
+            if event['keyName'] in ['ArrowDown', 's', 'S']:
+                del key_loop[Key.DOWN]
+            if event['keyName'] in ['ArrowLeft', 'a', 'A']:
+                del key_loop[Key.LEFT]
+            if event['keyName'] in ['ArrowRight', 'd', 'D']:
+                del key_loop[Key.RIGHT]
+
+        koef = 1
+        speed = 0
+        turn_rad = 0
+
+        if Key.SHIFT in key_loop:
+            koef = 1.5
+
+        if Key.LEFT in key_loop and (not key_loop.get(Key.RIGHT) or key_loop[Key.LEFT] > key_loop[Key.RIGHT]):
+            turn_rad = koef * TURN_DEG
+
+        if Key.RIGHT in key_loop and (not key_loop.get(Key.LEFT) or key_loop[Key.RIGHT] > key_loop[Key.LEFT]):
+            turn_rad = koef * -TURN_DEG
+
+        if Key.UP in key_loop:
+            speed = koef * SPEED
+
+        if Key.DOWN in key_loop:
+            speed = koef * -SPEED
+
+        global cur_koef
+        global cur_speed
+        global cur_turn_rad
+
+        if (cur_koef, cur_speed, cur_turn_rad) != (koef, speed, turn_rad):
+            """ Process only when changes (for optimize) """
+
+            cur_koef, cur_speed, cur_turn_rad = (koef, speed, turn_rad)
+            adapter.move(speed, math.radians(turn_rad))
+            print(f'Moving: {speed=} , {turn_rad=}', flush=True)
+
+            await mini_sleep()
+            await websocket.send(json.dumps({"type": "moving_status", "speed": speed, "turn_rad": turn_rad}))
+
+
+async def mini_sleep():
+    await asyncio.sleep(0.03)
+
+
+async def serve_static(sever_root, path, request_headers):
+    """Serves a file when doing a GET request with a valid path."""
+
+    if "Upgrade" in request_headers:
+        return  # Probably a WebSocket connection
+
+    if path in ['/']:
+        path = '/index.html'
+
+    response_headers = [
+        ('Server', 'asyncio websocket server'),
+        ('Connection', 'close'),
+    ]
+
+    # Derive full system path
+    full_path = os.path.realpath(os.path.join(sever_root, path[1:]))
+
+    # Validate the path
+    if os.path.commonpath((sever_root, full_path)) != sever_root or \
+            not os.path.exists(full_path) or not os.path.isfile(full_path):
+        print("HTTP GET {} 404 NOT FOUND".format(path))
+        return HTTPStatus.NOT_FOUND, [], b'404 NOT FOUND'
+
+    # Guess file content type
+    extension = full_path.split(".")[-1]
+    mime_type = MIME_TYPES.get(str(extension), "application/octet-stream")
+    response_headers.append(('Content-Type', mime_type))
+
+    # Read the whole file into memory and send it out
+    body = open(full_path, 'rb').read()
+    response_headers.append(('Content-Length', str(len(body))))
+    print("HTTP GET {} 200 OK".format(path))
+    return HTTPStatus.OK, response_headers, body
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument("-d", "--dummy", help="use dummy adapter (for test)",
+                        action="store_true")
+    args = parser.parse_args()
+
+    if args.dummy:
+        adapter = DummyAdapter()
+    else:
+        adapter = PyRoombaAdapter(TTY)
+
+    try:
+        handler = functools.partial(serve_static, os.getcwd() + "/static")
+        start_server = websockets.serve(rc_input, SERVER, PORT, process_request=handler)
+        print("Roomba RC starting...", flush=True)
+        print(f"Server: http://{SERVER}:{PORT}", flush=True)
+        print(f"WebSocket: ws://{SERVER}:{PORT}", flush=True)
+
+        asyncio.get_event_loop().run_until_complete(start_server)
+        asyncio.get_event_loop().run_forever()
+        sys.exit(0)
+    except Exception as e:
+        print(e)
+        adapter.move(0, math.radians(0))
+        sys.exit(1)
+    finally:
+        del adapter
