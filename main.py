@@ -15,9 +15,9 @@ from http import HTTPStatus
 import websockets
 from pyroombaadapter import PyRoombaAdapter
 
-logger = logging.getLogger(__name__)
+from models import MoveModel, ServerModel
 
-SPEED = 0.2
+SPEED = 0.25
 TURN_DEG = 40
 
 SERVER = "0.0.0.0"
@@ -36,7 +36,9 @@ adapter = None
 MIME_TYPES = {
     "html": "text/html",
     "js": "text/javascript",
-    "css": "text/css"
+    "css": "text/css",
+    "png": "image/png"
+
 }
 
 
@@ -50,77 +52,105 @@ class Key(Enum):
 
 key_loop = {}
 
-cur_koef = 1
-cur_speed = 0
-cur_turn_rad = 0
+server_model: ServerModel = ServerModel(SERVER, PORT)
+cur_move: MoveModel = MoveModel(0, 0)
 
 
 async def rc_input(websocket, path):
+    await re_render_views(websocket, MoveModel(0, 0))
+    global cur_move
+
     while True:
-        event_json = await websocket.recv()
-        # print(f"< {event_json}")
+        raw_event = await websocket.recv()
+        json_event = json.loads(raw_event)
 
-        event = json.loads(event_json)
+        changed_move: MoveModel = MoveModel(0, 0)
 
-        if event['event'] == 'keydown':
-            ev_time = time.time()  # Need to trace press order
+        if json_event["type"] in ['keydown', 'keyup']:
+            changed_move = await handle_key_event(json_event)
+        if json_event["type"] == 'move_event':
+            changed_move = await handle_move_event(json_event)
 
-            if event['keyName'] in ['Shift']:
-                key_loop[Key.SHIFT] = ev_time
-            if event['keyName'] in ['ArrowUp', 'w', 'W']:
-                key_loop[Key.UP] = ev_time
-            if event['keyName'] in ['ArrowDown', 's', 'S']:
-                key_loop[Key.DOWN] = ev_time
-            if event['keyName'] in ['ArrowLeft', 'a', 'A']:
-                key_loop[Key.LEFT] = ev_time
-            if event['keyName'] in ['ArrowRight', 'd', 'D']:
-                key_loop[Key.RIGHT] = ev_time
-
-        if event['event'] == 'keyup':
-            if event['keyName'] in ['Shift']:
-                del key_loop[Key.SHIFT]
-
-            if event['keyName'] in ['ArrowUp', 'w', 'W']:
-                del key_loop[Key.UP]
-            if event['keyName'] in ['ArrowDown', 's', 'S']:
-                del key_loop[Key.DOWN]
-            if event['keyName'] in ['ArrowLeft', 'a', 'A']:
-                del key_loop[Key.LEFT]
-            if event['keyName'] in ['ArrowRight', 'd', 'D']:
-                del key_loop[Key.RIGHT]
-
-        koef = 1
-        speed = 0
-        turn_rad = 0
-
-        if Key.SHIFT in key_loop:
-            koef = 1.5
-
-        if Key.LEFT in key_loop and (not key_loop.get(Key.RIGHT) or key_loop[Key.LEFT] > key_loop[Key.RIGHT]):
-            turn_rad = koef * TURN_DEG
-
-        if Key.RIGHT in key_loop and (not key_loop.get(Key.LEFT) or key_loop[Key.RIGHT] > key_loop[Key.LEFT]):
-            turn_rad = koef * -TURN_DEG
-
-        if Key.UP in key_loop:
-            speed = koef * SPEED
-
-        if Key.DOWN in key_loop:
-            speed = koef * -SPEED
-
-        global cur_koef
-        global cur_speed
-        global cur_turn_rad
-
-        if (cur_koef, cur_speed, cur_turn_rad) != (koef, speed, turn_rad):
+        if cur_move != changed_move:
             """ Process only when changes (for optimize) """
 
-            cur_koef, cur_speed, cur_turn_rad = (koef, speed, turn_rad)
-            adapter.move(speed, math.radians(turn_rad))
-            print(f'Moving: {speed=} , {turn_rad=}', flush=True)
-
+            cur_move = changed_move
+            adapter.move(cur_move.speed, math.radians(cur_move.turn_deg))
+            await re_render_views(websocket, cur_move)
             await mini_sleep()
-            await websocket.send(json.dumps({"type": "moving_status", "speed": speed, "turn_rad": turn_rad}))
+
+
+async def handle_move_event(event_json) -> MoveModel:
+    dx_koef = round(float(event_json['dx_koef']), 2)
+    dy_koef = round(float(event_json['dy_koef']), 2)
+    if math.fabs(dx_koef) < 0.4:
+        dx_koef = 0
+    if math.fabs(dy_koef) < 0.4:
+        dy_koef = 0
+
+    if math.fabs(dy_koef) > math.fabs(dx_koef):
+        dx_koef = 0
+    else:
+        dy_koef = 0
+
+    return MoveModel(round(dy_koef * SPEED, 1), round(dx_koef * -TURN_DEG, -0))
+
+
+async def handle_key_event(event) -> MoveModel:
+    global key_loop
+
+    if event['type'] == 'keydown':
+        ev_time = time.time()  # Need to trace press order
+
+        if event['keyName'] in ['Shift']:
+            key_loop[Key.SHIFT] = ev_time
+        if event['keyName'] in ['ArrowUp', 'w', 'W']:
+            key_loop[Key.UP] = ev_time
+        if event['keyName'] in ['ArrowDown', 's', 'S']:
+            key_loop[Key.DOWN] = ev_time
+        if event['keyName'] in ['ArrowLeft', 'a', 'A']:
+            key_loop[Key.LEFT] = ev_time
+        if event['keyName'] in ['ArrowRight', 'd', 'D']:
+            key_loop[Key.RIGHT] = ev_time
+
+    if event['type'] == 'keyup':
+        if event['keyName'] in ['Shift']:
+            del key_loop[Key.SHIFT]
+
+        if event['keyName'] in ['ArrowUp', 'w', 'W']:
+            del key_loop[Key.UP]
+        if event['keyName'] in ['ArrowDown', 's', 'S']:
+            del key_loop[Key.DOWN]
+        if event['keyName'] in ['ArrowLeft', 'a', 'A']:
+            del key_loop[Key.LEFT]
+        if event['keyName'] in ['ArrowRight', 'd', 'D']:
+            del key_loop[Key.RIGHT]
+
+    speed = 0
+    turn_deg = 0
+
+    if Key.SHIFT in key_loop:
+        koef = 1.5
+    else:
+        koef = 1
+
+    if Key.LEFT in key_loop and (not key_loop.get(Key.RIGHT) or key_loop[Key.LEFT] > key_loop[Key.RIGHT]):
+        turn_deg = koef * TURN_DEG
+
+    if Key.RIGHT in key_loop and (not key_loop.get(Key.LEFT) or key_loop[Key.RIGHT] > key_loop[Key.LEFT]):
+        turn_deg = koef * -TURN_DEG
+
+    if Key.UP in key_loop:
+        speed = koef * SPEED
+
+    if Key.DOWN in key_loop:
+        speed = koef * -SPEED
+
+    return MoveModel(speed, turn_deg)
+
+
+async def re_render_views(websocket, move: MoveModel):
+    await websocket.send(json.dumps({"type": "moving_status", "speed": move.speed, "turn_deg": move.turn_deg}))
 
 
 async def mini_sleep():
@@ -147,7 +177,7 @@ async def serve_static(sever_root, path, request_headers):
     # Validate the path
     if os.path.commonpath((sever_root, full_path)) != sever_root or \
             not os.path.exists(full_path) or not os.path.isfile(full_path):
-        print("HTTP GET {} 404 NOT FOUND".format(path))
+        logging.warning(" HTTP GET {} 404 NOT FOUND".format(path))
         return HTTPStatus.NOT_FOUND, [], b'404 NOT FOUND'
 
     # Guess file content type
@@ -158,14 +188,13 @@ async def serve_static(sever_root, path, request_headers):
     # Read the whole file into memory and send it out
     body = open(full_path, 'rb').read()
     response_headers.append(('Content-Length', str(len(body))))
-    print("HTTP GET {} 200 OK".format(path))
+    logging.debug("HTTP GET {} 200 OK".format(path))
     return HTTPStatus.OK, response_headers, body
 
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(description='Process some integers.')
-    parser.add_argument("-d", "--dummy", help="use dummy adapter (for test)",
+    parser.add_argument("-d", "--dummy", help="use dummy PyRoombaAdapter (for testing purposes)",
                         action="store_true")
     args = parser.parse_args()
 
@@ -175,11 +204,9 @@ if __name__ == "__main__":
         adapter = PyRoombaAdapter(TTY)
 
     try:
+        print(f"Roomba RC http://{server_model.server}:{server_model.port}", flush=True)
         handler = functools.partial(serve_static, os.getcwd() + "/static")
         start_server = websockets.serve(rc_input, SERVER, PORT, process_request=handler)
-        print("Roomba RC starting...", flush=True)
-        print(f"Server: http://{SERVER}:{PORT}", flush=True)
-        print(f"WebSocket: ws://{SERVER}:{PORT}", flush=True)
 
         asyncio.get_event_loop().run_until_complete(start_server)
         asyncio.get_event_loop().run_forever()
