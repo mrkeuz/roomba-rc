@@ -193,6 +193,5 @@ window.addEventListener("load", function () {
 
   pad.addEventListener("touchmove", debounced_touch_move);
   pad.addEventListener("touchend", handleEnd);
-  // pad.addEventListener("touchcancel", handleEnd);
 })
 

@@ -1,29 +1,26 @@
-# Roomba RC
+Roomba RC
+=========
 
-Control roomba as RC model from via touchpad and keyboard
+Web app for control roomba as RC model via touchpad or keyboard.  
+Just for fun project. 
 
-# Web browser UI 
+Web browser UI
+--------------
 
 ![Roomba RC UI](./docs/roomba_rc_ui.png)
 
-# Roadmap
+Install and run
+---------------
 
-- [ ] JS and CSS
-    - [ ] Migrate to TS
-    - [ ] Add comments
-    - [ ] Add mouse drag support
-    - [ ] Webpack like builder
-    - [ ] Migrate CSS to sass
-- [ ] Python
-    - [ ] Catch exception on websocket disconnect
-    - [ ] Remove extra async/await's
-    - [ ] Move functions to modules
-    - [ ] Rename functions
-    - [ ] Add connection status (read statuses)
-    - [ ] Add QR-code for link
-    - [ ] Detect IP in local
-    - [ ] Remove unused py files
-    - [ ] Add build package
+- Connect to roomba via USB-tty adapter and Open Interface (OI) (see links)
+- Install dependencies
+  ```shell
+  # For non-root access to /dev/ttyUSB0 (tested on Ubuntu 20.04)
+  sudo usermod -a -G dialout <USERNAME>  
      
+  pip3 install -r requirements.txt
+  python3 main.py
+  ```
 
-     
+Links
+- https://www.irobotweb.com/~/media/MainSite/PDFs/About/STEM/Create/iRobot_Roomba_600_Open_Interface_Spec.pdf

@@ -2,12 +2,12 @@ from dataclasses import dataclass
 
 
 @dataclass
-class MoveModel:
+class Move:
     speed: float
     turn_deg: float
 
 
 @dataclass
-class ServerModel:
+class Server:
     server: str
     port: int

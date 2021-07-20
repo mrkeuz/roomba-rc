@@ -15,7 +15,7 @@ from http import HTTPStatus
 import websockets
 from pyroombaadapter import PyRoombaAdapter
 
-from models import MoveModel, ServerModel
+from models import Move, Server
 
 SPEED = 0.25
 TURN_DEG = 40
@@ -52,19 +52,19 @@ class Key(Enum):
 
 key_loop = {}
 
-server_model: ServerModel = ServerModel(SERVER, PORT)
-cur_move: MoveModel = MoveModel(0, 0)
+server_spec: Server = Server(SERVER, PORT)
+cur_move: Move = Move(0, 0)
 
 
 async def rc_input(websocket, path):
-    await re_render_views(websocket, MoveModel(0, 0))
+    await re_render_views(websocket, Move(0, 0))
     global cur_move
 
     while True:
         raw_event = await websocket.recv()
         json_event = json.loads(raw_event)
 
-        changed_move: MoveModel = MoveModel(0, 0)
+        changed_move: Move = Move(0, 0)
 
         if json_event["type"] in ['keydown', 'keyup']:
             changed_move = await handle_key_event(json_event)
@@ -80,9 +80,11 @@ async def rc_input(websocket, path):
             await mini_sleep()
 
 
-async def handle_move_event(event_json) -> MoveModel:
+async def handle_move_event(event_json) -> Move:
     dx_koef = round(float(event_json['dx_koef']), 2)
     dy_koef = round(float(event_json['dy_koef']), 2)
+
+    # Avoid micro moves
     if math.fabs(dx_koef) < 0.4:
         dx_koef = 0
     if math.fabs(dy_koef) < 0.4:
@@ -93,10 +95,10 @@ async def handle_move_event(event_json) -> MoveModel:
     else:
         dy_koef = 0
 
-    return MoveModel(round(dy_koef * SPEED, 1), round(dx_koef * -TURN_DEG, -0))
+    return Move(round(dy_koef * SPEED, 1), round(dx_koef * -TURN_DEG, -0))
 
 
-async def handle_key_event(event) -> MoveModel:
+async def handle_key_event(event) -> Move:
     global key_loop
 
     if event['type'] == 'keydown':
@@ -146,10 +148,10 @@ async def handle_key_event(event) -> MoveModel:
     if Key.DOWN in key_loop:
         speed = koef * -SPEED
 
-    return MoveModel(speed, turn_deg)
+    return Move(speed, turn_deg)
 
 
-async def re_render_views(websocket, move: MoveModel):
+async def re_render_views(websocket, move: Move):
     await websocket.send(json.dumps({"type": "moving_status", "speed": move.speed, "turn_deg": move.turn_deg}))
 
 
@@ -202,9 +204,10 @@ if __name__ == "__main__":
         adapter = DummyAdapter()
     else:
         adapter = PyRoombaAdapter(TTY)
+        adapter.change_mode_to_full()
 
     try:
-        print(f"Roomba RC http://{server_model.server}:{server_model.port}", flush=True)
+        print(f"Roomba RC http://{server_spec.server}:{server_spec.port}", flush=True)
         handler = functools.partial(serve_static, os.getcwd() + "/static")
         start_server = websockets.serve(rc_input, SERVER, PORT, process_request=handler)
 
