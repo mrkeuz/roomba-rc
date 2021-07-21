@@ -16,7 +16,7 @@ Install and run
 - Install dependencies
   ```shell
   # For non-root access to /dev/ttyUSB0 (tested on Ubuntu 20.04)
-  sudo usermod -a -G dialout <USERNAME>  
+  sudo usermod -a -G dialout $USER
      
   pip3 install -r requirements.txt
   python3 main.py
