@@ -4,7 +4,7 @@ Roomba RC
 Web app for control roomba as RC model via touchpad or keyboard.  
 Just for fun project. 
 
-Web browser UI
+Web UI
 --------------
 
 ![Roomba RC UI](./docs/roomba_rc_ui.png)
